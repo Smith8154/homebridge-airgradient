@@ -1,5 +1,5 @@
 {
-  "private": true,
+  "private": false,
   "displayName": "Air Gradient",
   "name": "homebridge-airgradient",
   "version": "1.0.0",
