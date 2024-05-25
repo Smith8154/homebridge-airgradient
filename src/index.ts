@@ -35,6 +35,11 @@ interface AirGradientData {
   noxIndex: number;
 }
 
+interface SensorConfig {
+  locationId: string;
+  pollingInterval?: number;
+}
+
 class AirGradientPlatform implements DynamicPlatformPlugin {
   public readonly log: Logging;
   public readonly api: API;
@@ -49,7 +54,7 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
     hap = api.hap;
 
     if (config.sensors) {
-      for (const sensorConfig of config.sensors) {
+      for (const sensorConfig of config.sensors as SensorConfig[]) {
         this.log.info('Initializing sensor with location ID:', sensorConfig.locationId);
         this.addAccessory(sensorConfig);
       }
@@ -60,7 +65,7 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
     });
   }
 
-  addAccessory(sensorConfig: any) {
+  addAccessory(sensorConfig: SensorConfig) {
     const uuid = hap.uuid.generate(sensorConfig.locationId);
     const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
@@ -90,7 +95,7 @@ class AirGradientSensor {
   private data: AirGradientData | null = null;
   private readonly service: Service;
 
-  constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: any) {
+  constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: SensorConfig) {
     this.platform = platform;
     this.accessory = accessory;
     this.log = platform.log;
