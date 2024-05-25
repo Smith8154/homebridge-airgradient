@@ -6,11 +6,11 @@ This plugin allows you to display the air quality values from your AirGradient d
 
  - Add a single AirGradient device into HomeKit
  - Reporting values for PM 2.5, PM 10, TVOC, and NOx (HomeKit currently does not support any of the other sensors on AirGradient devices)
+ - Supports multiple AirGradient devices
 
 ### Planned Features
 
  - Reporting of hardware details (manufacturer, serial number, and model) into HomeKit
- - Support for multiple AirGradient devices
 
 ### Contributing
 
