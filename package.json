@@ -1,9 +1,9 @@
 {
   "private": false,
-  "displayName": "Air Gradient",
+  "displayName": "AirGradient",
   "name": "homebridge-airgradient",
-  "version": "1.0.1",
-  "description": "Fetches air quality information from Air Gradient devices.",
+  "version": "1.0.2",
+  "description": "Fetches air quality information from AirGradient devices.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -11,6 +11,9 @@
   },
   "bugs": {
     "url": "https://github.com/Smith8154/homebridge-airgradient/issues"
+  },
+  "dependencies": {
+    "axios": "^0.21.1"
   },
   "engines": {
     "node": "^18.17.0 || ^20.9.0",
