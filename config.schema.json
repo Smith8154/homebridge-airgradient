@@ -1,16 +1,61 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "AirGradientPlatform",
   "pluginType": "platform",
-  "singular": true,
+  "headerDisplay": "AirGradient Platform Configuration",
   "schema": {
     "type": "object",
     "properties": {
-      "name": {
-        "title": "Name",
+      "apiToken": {
+        "title": "API Token",
         "type": "string",
-        "required": true,
-        "default": "Example Dynamic Platform"
+        "required": true
+      },
+      "sensors": {
+        "type": "array",
+        "title": "AirGradient Sensors",
+        "items": {
+          "type": "object",
+          "properties": {
+            "locationId": {
+              "title": "Location ID",
+              "type": "string",
+              "required": true
+            },
+            "pollingInterval": {
+              "title": "Polling Interval (ms)",
+              "type": "number",
+              "default": 60000,
+              "minimum": 1000
+            }
+          }
+        }
       }
     }
-  }
+  },
+  "layout": [
+    {
+      "type": "section",
+      "items": [
+        {
+          "key": "apiToken",
+          "placeholder": "Enter your API Token"
+        },
+        {
+          "key": "sensors",
+          "type": "array",
+          "add": "Add Sensor",
+          "items": [
+            {
+              "key": "sensors[].locationId",
+              "placeholder": "Enter your Location ID"
+            },
+            {
+              "key": "sensors[].pollingInterval",
+              "placeholder": 60000
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }

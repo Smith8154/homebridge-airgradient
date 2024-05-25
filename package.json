@@ -2,7 +2,7 @@
   "private": false,
   "displayName": "Air Gradient",
   "name": "homebridge-airgradient",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Fetches air quality information from Air Gradient devices.",
   "license": "Apache-2.0",
   "repository": {

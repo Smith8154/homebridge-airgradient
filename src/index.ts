@@ -1,8 +1,9 @@
 import axios from 'axios';
 import {
   API,
-  AccessoryPlugin,
-  AccessoryConfig,
+  DynamicPlatformPlugin,
+  PlatformAccessory,
+  PlatformConfig,
   Service,
   Logging,
   HAP,
@@ -34,29 +35,80 @@ interface AirGradientData {
   noxIndex: number;
 }
 
-class AirGradientSensor implements AccessoryPlugin {
+class AirGradientPlatform implements DynamicPlatformPlugin {
+  public readonly log: Logging;
+  public readonly api: API;
+  public readonly accessories: PlatformAccessory[] = [];
+  public readonly apiToken: string;
+
+  constructor(log: Logging, config: PlatformConfig, api: API) {
+    this.log = log;
+    this.api = api;
+    this.apiToken = config.apiToken;
+
+    hap = api.hap;
+
+    if (config.sensors) {
+      for (const sensorConfig of config.sensors) {
+        this.log.info('Initializing sensor with location ID:', sensorConfig.locationId);
+        this.addAccessory(sensorConfig);
+      }
+    }
+
+    api.on('didFinishLaunching', () => {
+      this.log.info('Did finish launching');
+    });
+  }
+
+  addAccessory(sensorConfig: any) {
+    const uuid = hap.uuid.generate(sensorConfig.locationId);
+    const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+
+    if (existingAccessory) {
+      this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+      new AirGradientSensor(this, existingAccessory, sensorConfig);
+    } else {
+      this.log.info('Adding new accessory for location ID:', sensorConfig.locationId);
+      const accessory = new this.api.platformAccessory(`AirGradient Sensor ${sensorConfig.locationId}`, uuid);
+      new AirGradientSensor(this, accessory, sensorConfig);
+      this.api.registerPlatformAccessories('homebridge-airgradient', 'AirGradientPlatform', [accessory]);
+    }
+  }
+
+  configureAccessory(accessory: PlatformAccessory) {
+    this.accessories.push(accessory);
+  }
+}
+
+class AirGradientSensor {
+  private readonly platform: AirGradientPlatform;
+  private readonly accessory: PlatformAccessory;
   private readonly log: Logging;
-  private readonly name: string;
   private readonly locationId: string;
-  private readonly apiToken: string;
   private readonly pollingInterval: number;
   private readonly apiUrl: string;
-  private readonly service: Service;
   private data: AirGradientData | null = null;
+  private readonly service: Service;
 
-  constructor(log: Logging, config: AccessoryConfig) {
-    this.log = log;
-    this.name = config.name || 'AirGradient Sensor';
-    this.locationId = config.locationId;
-    this.apiToken = config.apiToken;
-    this.pollingInterval = config.pollingInterval || 60000; // Default to 1 minute
+  constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: any) {
+    this.platform = platform;
+    this.accessory = accessory;
+    this.log = platform.log;
+    this.locationId = sensorConfig.locationId;
+    this.pollingInterval = sensorConfig.pollingInterval || 60000; // Default to 1 minute
 
     // Construct the API URL using the locationId and apiToken
-    this.apiUrl = `https://api.airgradient.com/public/api/v1/locations/${this.locationId}/measures/current?token=${this.apiToken}`;
+    this.apiUrl = `https://api.airgradient.com/public/api/v1/locations/${this.locationId}/measures/current?token=${this.platform.apiToken}`;
 
-    this.service = new hap.Service.AirQualitySensor(this.name);
+    this.accessory.getService(hap.Service.AccessoryInformation)!
+      .setCharacteristic(hap.Characteristic.Manufacturer, 'AirGradient')
+      .setCharacteristic(hap.Characteristic.Model, 'AirGradient Sensor')
+      .setCharacteristic(hap.Characteristic.SerialNumber, this.locationId);
+
+    this.service = this.accessory.getService(hap.Service.AirQualitySensor) ||
+      this.accessory.addService(hap.Service.AirQualitySensor);
+
     this.setupCharacteristics();
-
     this.updateData();
   }
 
@@ -82,6 +134,14 @@ class AirGradientSensor implements AccessoryPlugin {
       const response = await axios.get(this.apiUrl);
       this.data = response.data;
       this.log.info('Data fetched successfully:', this.data);
+
+      // Update the accessory name with the location name from the API
+      if (this.data) {
+        this.accessory.displayName = this.data.locationName;
+        this.accessory.getService(hap.Service.AccessoryInformation)!
+          .setCharacteristic(hap.Characteristic.Name, this.data.locationName);
+        this.service.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
+      }
     } catch (error) {
       this.log.error('Error fetching data from AirGradient API:', error);
       throw error;
@@ -172,13 +232,9 @@ class AirGradientSensor implements AccessoryPlugin {
       callback(new Error('No data available'));
     }
   }
-
-  public getServices(): Service[] {
-    return [this.service];
-  }
 }
 
 export = (homebridge: API) => {
   hap = homebridge.hap;
-  homebridge.registerAccessory('homebridge-airgradient', 'AirGradientSensor', AirGradientSensor);
+  homebridge.registerPlatform('homebridge-airgradient', 'AirGradientPlatform', AirGradientPlatform);
 };
