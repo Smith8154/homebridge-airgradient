@@ -94,6 +94,9 @@ class AirGradientSensor {
   private readonly apiUrl: string;
   private data: AirGradientData | null = null;
   private readonly service: Service;
+  private readonly serviceTemp: Service;
+  private readonly serviceCO2: Service;
+  private readonly serviceHumid: Service;
 
   constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: SensorConfig) {
     this.platform = platform;
@@ -112,6 +115,12 @@ class AirGradientSensor {
 
     this.service = this.accessory.getService(hap.Service.AirQualitySensor) ||
       this.accessory.addService(hap.Service.AirQualitySensor);
+    this.serviceTemp = this.accessory.getService(hap.Service.TemperatureSensor) ||
+      this.accessory.addService(hap.Service.TemperatureSensor);
+    this.serviceCO2 = this.accessory.getService(hap.Service.CarbonDioxideSensor) ||
+      this.accessory.addService(hap.Service.CarbonDioxideSensor);
+    this.serviceHumid = this.accessory.getService(hap.Service.HumiditySensor) ||
+      this.accessory.addService(hap.Service.HumiditySensor);
 
     this.setupCharacteristics();
     this.updateData();
@@ -132,6 +141,18 @@ class AirGradientSensor {
 
     this.service.addCharacteristic(hap.Characteristic.NitrogenDioxideDensity)
       .on('get', this.handleNitrogenDioxideDensityGet.bind(this));
+
+    this.serviceTemp.getCharacteristic(hap.Characteristic.CurrentTemperature)
+      .on('get', this.handleCurrentTemperatureGet.bind(this));
+
+    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideDetected)
+      .on('get', this.handleCarbonDioxideDetectedGet.bind(this));
+
+    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideLevel)
+      .on('get', this.handleCarbonDioxideLevelGet.bind(this));
+
+    this.serviceHumid.getCharacteristic(hap.Characteristic.CurrentRelativeHumidity)
+      .on('get', this.handleCurrentRelativeHumidityGet.bind(this));
   }
 
   private async fetchData() {
@@ -146,6 +167,9 @@ class AirGradientSensor {
         this.accessory.getService(hap.Service.AccessoryInformation)!
           .setCharacteristic(hap.Characteristic.Name, this.data.locationName);
         this.service.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
+        this.serviceTemp.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
+        this.serviceCO2.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
+        this.serviceHumid.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
       }
     } catch (error) {
       this.log.error('Error fetching data from AirGradient API:', error);
@@ -173,14 +197,21 @@ class AirGradientSensor {
       const pm10 = this.data.pm10;
       const tvoc = this.data.tvocIndex;
       const nox = this.data.noxIndex;
+      const temp = this.data.atmp;
+      const co2 = this.data.rco2;
+      const rhum = this.data.rhum;
 
       this.service.updateCharacteristic(hap.Characteristic.AirQuality, this.calculateAirQuality(pm2_5));
       this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, pm2_5);
       this.service.updateCharacteristic(hap.Characteristic.PM10Density, pm10);
       this.service.updateCharacteristic(hap.Characteristic.VOCDensity, tvoc);
       this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, nox);
-
-      this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, NOx: ${nox}`);
+      this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, temp);
+      this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideDetected, this.calculateCO2Detected(co2));
+      this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, co2);
+      this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, rhum);
+      this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
+        `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, RHUM: ${rhum}`);
     }
   }
 
@@ -195,6 +226,14 @@ class AirGradientSensor {
       return hap.Characteristic.AirQuality.INFERIOR;
     } else {
       return hap.Characteristic.AirQuality.POOR;
+    }
+  }
+
+  private calculateCO2Detected(co2: number): number {
+    if (co2 <= 800) {
+      return hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_NORMAL;
+    } else {
+      return hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_ABNORMAL;
     }
   }
 
@@ -233,6 +272,38 @@ class AirGradientSensor {
   private handleNitrogenDioxideDensityGet(callback: (error: Error | null, value?: number) => void) {
     if (this.data) {
       callback(null, this.data.noxIndex);
+    } else {
+      callback(new Error('No data available'));
+    }
+  }
+
+  handleCurrentTemperatureGet(callback: (error: Error | null, value?: number) => void) {
+    if (this.data) {
+      callback(null, this.data.atmp);
+    } else {
+      callback(new Error('No data available'));
+    }
+  }
+
+  handleCarbonDioxideDetectedGet(callback: (error: Error | null, value?: number) => void) {
+    if (this.data) {
+      callback(null, this.calculateCO2Detected(this.data.rco2));
+    } else {
+      callback(new Error('No data available'));
+    }
+  }
+
+  handleCarbonDioxideLevelGet(callback: (error: Error | null, value?: number) => void) {
+    if (this.data) {
+      callback(null, this.data.rco2);
+    } else {
+      callback(new Error('No data available'));
+    }
+  }
+
+  handleCurrentRelativeHumidityGet(callback: (error: Error | null, value?: number) => void) {
+    if (this.data) {
+      callback(null, this.data.rhum);
     } else {
       callback(new Error('No data available'));
     }
