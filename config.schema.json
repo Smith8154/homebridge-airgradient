@@ -1,7 +1,7 @@
 {
-  "pluginAlias": "AirGradientPlatform",
+  "pluginAlias": "AirGradient API",
   "pluginType": "platform",
-  "headerDisplay": "AirGradient Platform Configuration",
+  "headerDisplay": "AirGradient Configuration",
   "schema": {
     "type": "object",
     "properties": {
