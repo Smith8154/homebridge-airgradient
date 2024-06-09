@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "AirGradient API",
+  "pluginAlias": "AirGradientPlatform",
   "pluginType": "platform",
   "headerDisplay": "AirGradient Configuration",
   "schema": {
