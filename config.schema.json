@@ -38,7 +38,8 @@
       "items": [
         {
           "key": "apiToken",
-          "placeholder": "Enter your API Token"
+          "placeholder": "Enter your API Token",
+          "description": "Generated from the AirGradient Dashboard"
         },
         {
           "key": "sensors",
@@ -47,7 +48,8 @@
           "items": [
             {
               "key": "sensors[].locationId",
-              "placeholder": "Enter your Location ID"
+              "placeholder": "Enter your Location ID",
+              "description": "4-5 digit number, available on the Location menu"
             },
             {
               "key": "sensors[].pollingInterval",
