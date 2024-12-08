@@ -5,19 +5,14 @@
   "schema": {
     "type": "object",
     "properties": {
-      "apiToken": {
-        "title": "API Token",
-        "type": "string",
-        "required": true
-      },
       "sensors": {
         "type": "array",
         "title": "AirGradient Sensors",
         "items": {
           "type": "object",
           "properties": {
-            "locationId": {
-              "title": "Location ID",
+            "serialno": {
+              "title": "Serial Number",
               "type": "string",
               "required": true
             },
@@ -37,17 +32,13 @@
       "type": "section",
       "items": [
         {
-          "key": "apiToken",
-          "placeholder": "Enter your API Token"
-        },
-        {
           "key": "sensors",
           "type": "array",
           "add": "Add Sensor",
           "items": [
             {
-              "key": "sensors[].locationId",
-              "placeholder": "Enter your Location ID"
+              "key": "sensors[].serialno",
+              "placeholder": "Enter your Serial Number"
             },
             {
               "key": "sensors[].pollingInterval",

@@ -13,7 +13,6 @@ let hap: HAP;
 
 interface AirGradientData {
   locationId: number;
-  locationName: string;
   pm01: number;
   pm02: number;
   pm10: number;
@@ -36,7 +35,7 @@ interface AirGradientData {
 }
 
 interface SensorConfig {
-  locationId: string;
+  serialno: string;
   pollingInterval?: number;
 }
 
@@ -44,18 +43,16 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
   public readonly log: Logging;
   public readonly api: API;
   public readonly accessories: PlatformAccessory[] = [];
-  public readonly apiToken: string;
 
   constructor(log: Logging, config: PlatformConfig, api: API) {
     this.log = log;
     this.api = api;
-    this.apiToken = config.apiToken;
 
     hap = api.hap;
 
     if (config.sensors) {
       for (const sensorConfig of config.sensors as SensorConfig[]) {
-        this.log.info('Initializing sensor with location ID:', sensorConfig.locationId);
+        this.log.info('Initializing sensor with serial number:', sensorConfig.serialno);
         this.addAccessory(sensorConfig);
       }
     }
@@ -66,15 +63,15 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
   }
 
   addAccessory(sensorConfig: SensorConfig) {
-    const uuid = hap.uuid.generate(sensorConfig.locationId);
+    const uuid = hap.uuid.generate(sensorConfig.serialno);
     const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
     if (existingAccessory) {
       this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
       new AirGradientSensor(this, existingAccessory, sensorConfig);
     } else {
-      this.log.info('Adding new accessory for location ID:', sensorConfig.locationId);
-      const accessory = new this.api.platformAccessory(`AirGradient Sensor ${sensorConfig.locationId}`, uuid);
+      this.log.info('Adding new accessory for serial number:', sensorConfig.serialno);
+      const accessory = new this.api.platformAccessory(`AirGradient Sensor ${sensorConfig.serialno}`, uuid);
       new AirGradientSensor(this, accessory, sensorConfig);
       this.api.registerPlatformAccessories('homebridge-airgradient', 'AirGradientPlatform', [accessory]);
     }
@@ -89,7 +86,7 @@ class AirGradientSensor {
   private readonly platform: AirGradientPlatform;
   private readonly accessory: PlatformAccessory;
   private readonly log: Logging;
-  private readonly locationId: string;
+  private readonly serialno: string;
   private readonly pollingInterval: number;
   private readonly apiUrl: string;
   private data: AirGradientData | null = null;
@@ -102,16 +99,15 @@ class AirGradientSensor {
     this.platform = platform;
     this.accessory = accessory;
     this.log = platform.log;
-    this.locationId = sensorConfig.locationId;
+    this.serialno = sensorConfig.serialno;
     this.pollingInterval = sensorConfig.pollingInterval || 60000; // Default to 1 minute
 
-    // Construct the API URL using the locationId and apiToken
-    this.apiUrl = `https://api.airgradient.com/public/api/v1/locations/${this.locationId}/measures/current?token=${this.platform.apiToken}`;
+    // Construct the local API URL using the serialno
+    this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
 
     this.accessory.getService(hap.Service.AccessoryInformation)!
       .setCharacteristic(hap.Characteristic.Manufacturer, 'AirGradient')
-      .setCharacteristic(hap.Characteristic.Model, 'AirGradient Sensor')
-      .setCharacteristic(hap.Characteristic.SerialNumber, this.locationId);
+      .setCharacteristic(hap.Characteristic.SerialNumber, this.serialno);
 
     this.service = this.accessory.getService(hap.Service.AirQualitySensor) ||
       this.accessory.addService(hap.Service.AirQualitySensor);
@@ -161,16 +157,8 @@ class AirGradientSensor {
       this.data = response.data;
       this.log.info('Data fetched successfully:', this.data);
 
-      // Update the accessory name with the location name from the API
-      if (this.data) {
-        this.accessory.displayName = this.data.locationName;
-        this.accessory.getService(hap.Service.AccessoryInformation)!
-          .setCharacteristic(hap.Characteristic.Name, this.data.locationName);
-        this.service.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
-        this.serviceTemp.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
-        this.serviceCO2.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
-        this.serviceHumid.setCharacteristic(hap.Characteristic.Name, this.data.locationName);
-      }
+      // Log the full response for debugging
+      this.log.debug('API response:', this.data);
     } catch (error) {
       this.log.error('Error fetching data from AirGradient API:', error);
       throw error;
@@ -201,15 +189,52 @@ class AirGradientSensor {
       const co2 = this.data.rco2;
       const rhum = this.data.rhum;
 
+      // Validate data before updating characteristics
+      if (typeof pm2_5 === 'number' && isFinite(pm2_5)) {
+        this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, pm2_5);
+      } else {
+        this.log.warn('Invalid PM2.5 value:', pm2_5);
+      }
+
+      if (typeof pm10 === 'number' && isFinite(pm10)) {
+        this.service.updateCharacteristic(hap.Characteristic.PM10Density, pm10);
+      } else {
+        this.log.warn('Invalid PM10 value:', pm10);
+      }
+
+      if (typeof tvoc === 'number' && isFinite(tvoc)) {
+        this.service.updateCharacteristic(hap.Characteristic.VOCDensity, tvoc);
+      } else {
+        this.log.warn('Invalid TVOC value:', tvoc);
+      }
+
+      if (typeof nox === 'number' && isFinite(nox)) {
+        this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, nox);
+      } else {
+        this.log.warn('Invalid NOx value:', nox);
+      }
+
+      if (typeof temp === 'number' && isFinite(temp)) {
+        this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, temp);
+      } else {
+        this.log.warn('Invalid Temperature value:', temp);
+      }
+
+      if (typeof co2 === 'number' && isFinite(co2)) {
+        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideDetected, this.calculateCO2Detected(co2));
+        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, co2);
+      } else {
+        this.log.warn('Invalid CO2 value:', co2);
+      }
+
+      if (typeof rhum === 'number' && isFinite(rhum)) {
+        this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, rhum);
+      } else {
+        this.log.warn('Invalid Humidity value:', rhum);
+      }
+
       this.service.updateCharacteristic(hap.Characteristic.AirQuality, this.calculateAirQuality(pm2_5));
-      this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, pm2_5);
-      this.service.updateCharacteristic(hap.Characteristic.PM10Density, pm10);
-      this.service.updateCharacteristic(hap.Characteristic.VOCDensity, tvoc);
-      this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, nox);
-      this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, temp);
-      this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideDetected, this.calculateCO2Detected(co2));
-      this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, co2);
-      this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, rhum);
+
       this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
         `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, RHUM: ${rhum}`);
     }
