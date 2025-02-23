@@ -15,10 +15,13 @@ interface AirGradientData {
   locationId: number;
   pm01: number;
   pm02: number;
+  pm02Compensated: number;
   pm10: number;
   pm003Count: number;
   atmp: number;
+  atmpCompensated: number;
   rhum: number;
+  rhumCompensated: number;
   rco2: number;
   tvoc: number;
   wifi: number;
@@ -37,6 +40,7 @@ interface AirGradientData {
 interface SensorConfig {
   serialno: string;
   pollingInterval?: number;
+  useCompensatedValues: boolean;
 }
 
 class AirGradientPlatform implements DynamicPlatformPlugin {
@@ -88,6 +92,7 @@ class AirGradientSensor {
   private readonly log: Logging;
   private readonly serialno: string;
   private readonly pollingInterval: number;
+  private readonly useCompensatedValues: boolean;
   private readonly apiUrl: string;
   private data: AirGradientData | null = null;
   private readonly service: Service;
@@ -101,6 +106,7 @@ class AirGradientSensor {
     this.log = platform.log;
     this.serialno = sensorConfig.serialno;
     this.pollingInterval = sensorConfig.pollingInterval || 60000; // Default to 1 minute
+    this.useCompensatedValues = sensorConfig.useCompensatedValues;
 
     // Construct the local API URL using the serialno
     this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
@@ -181,13 +187,13 @@ class AirGradientSensor {
 
   private updateCharacteristics() {
     if (this.data) {
-      const pm2_5 = this.data.pm02;
+      const pm2_5 = this.useCompensatedValues ? this.data.pm02Compensated : this.data.pm02;
       const pm10 = this.data.pm10;
       const tvoc = this.data.tvocIndex;
       const nox = this.data.noxIndex;
-      const temp = this.data.atmp;
+      const temp = this.useCompensatedValues ? this.data.atmpCompensated : this.data.atmp;
       const co2 = this.data.rco2;
-      const rhum = this.data.rhum;
+      const rhum = this.useCompensatedValues ? this.data.rhumCompensated : this.data.rhum;
 
       // Validate data before updating characteristics
       if (typeof pm2_5 === 'number' && isFinite(pm2_5)) {
@@ -264,7 +270,7 @@ class AirGradientSensor {
 
   private handleAirQualityGet(callback: (error: Error | null, value?: number) => void) {
     if (this.data) {
-      callback(null, this.calculateAirQuality(this.data.pm02));
+      callback(null, this.calculateAirQuality(this.useCompensatedValues ? this.data.pm02Compensated : this.data.pm02));
     } else {
       callback(new Error('No data available'));
     }
@@ -272,7 +278,7 @@ class AirGradientSensor {
 
   private handlePM2_5DensityGet(callback: (error: Error | null, value?: number) => void) {
     if (this.data) {
-      callback(null, this.data.pm02);
+      callback(null, this.useCompensatedValues ? this.data.pm02Compensated : this.data.pm02);
     } else {
       callback(new Error('No data available'));
     }
@@ -304,7 +310,7 @@ class AirGradientSensor {
 
   handleCurrentTemperatureGet(callback: (error: Error | null, value?: number) => void) {
     if (this.data) {
-      callback(null, this.data.atmp);
+      callback(null, this.useCompensatedValues ? this.data.atmpCompensated : this.data.atmp);
     } else {
       callback(new Error('No data available'));
     }
@@ -328,7 +334,7 @@ class AirGradientSensor {
 
   handleCurrentRelativeHumidityGet(callback: (error: Error | null, value?: number) => void) {
     if (this.data) {
-      callback(null, this.data.rhum);
+      callback(null, this.useCompensatedValues ? this.data.rhumCompensated : this.data.rhum);
     } else {
       callback(new Error('No data available'));
     }
