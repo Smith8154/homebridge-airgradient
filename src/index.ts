@@ -15,10 +15,13 @@ interface AirGradientData {
   locationId: number;
   pm01: number;
   pm02: number;
+  pm02Compensated?: number;
   pm10: number;
   pm003Count: number;
   atmp: number;
+  atmpCompensated?: number;
   rhum: number;
+  rhumCompensated?: number;
   rco2: number;
   tvoc: number;
   wifi: number;
@@ -37,7 +40,9 @@ interface AirGradientData {
 interface SensorConfig {
   serialno: string;
   pollingInterval?: number;
+  useCompensatedValues?: boolean;
 }
+
 
 class AirGradientPlatform implements DynamicPlatformPlugin {
   public readonly log: Logging;
@@ -94,6 +99,7 @@ class AirGradientSensor {
   private readonly serviceTemp: Service;
   private readonly serviceCO2: Service;
   private readonly serviceHumid: Service;
+  private readonly useCompensatedValues: boolean;
 
   constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: SensorConfig) {
     this.platform = platform;
@@ -101,6 +107,7 @@ class AirGradientSensor {
     this.log = platform.log;
     this.serialno = sensorConfig.serialno;
     this.pollingInterval = sensorConfig.pollingInterval || 60000; // Default to 1 minute
+    this.useCompensatedValues = sensorConfig.useCompensatedValues || false;
 
     // Construct the local API URL using the serialno
     this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
@@ -123,32 +130,72 @@ class AirGradientSensor {
   }
 
   private setupCharacteristics() {
-    this.service.getCharacteristic(hap.Characteristic.AirQuality)
-      .on('get', this.handleAirQualityGet.bind(this));
+    if (this.data) {
+      // Use compensated values if enabled and available, otherwise fallback to the default values
+      const pm2_5 = this.useCompensatedValues && this.data.pm02Compensated !== undefined
+        ? this.data.pm02Compensated
+        : this.data.pm02;
+      const temp = this.useCompensatedValues && this.data.atmpCompensated !== undefined
+        ? this.data.atmpCompensated
+        : this.data.atmp;
+      const humidity = this.useCompensatedValues && this.data.rhumCompensated !== undefined
+        ? this.data.rhumCompensated
+        : this.data.rhum;
 
-    this.service.getCharacteristic(hap.Characteristic.PM2_5Density)
-      .on('get', this.handlePM2_5DensityGet.bind(this));
+      // Other values remain the same
+      const pm10 = this.data.pm10;
+      const tvoc = this.data.tvocIndex;
+      const nox = this.data.noxIndex;
+      const co2 = this.data.rco2;
 
-    this.service.getCharacteristic(hap.Characteristic.PM10Density)
-      .on('get', this.handlePM10DensityGet.bind(this));
+      if (typeof pm2_5 === 'number' && isFinite(pm2_5)) {
+        this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, pm2_5);
+      } else {
+        this.log.warn('Invalid PM2.5 value:', pm2_5);
+      }
 
-    this.service.addCharacteristic(hap.Characteristic.VOCDensity)
-      .on('get', this.handleVOCDensityGet.bind(this));
+      if (typeof pm10 === 'number' && isFinite(pm10)) {
+        this.service.updateCharacteristic(hap.Characteristic.PM10Density, pm10);
+      } else {
+        this.log.warn('Invalid PM10 value:', pm10);
+      }
 
-    this.service.addCharacteristic(hap.Characteristic.NitrogenDioxideDensity)
-      .on('get', this.handleNitrogenDioxideDensityGet.bind(this));
+      if (typeof tvoc === 'number' && isFinite(tvoc)) {
+        this.service.updateCharacteristic(hap.Characteristic.VOCDensity, tvoc);
+      } else {
+        this.log.warn('Invalid TVOC value:', tvoc);
+      }
 
-    this.serviceTemp.getCharacteristic(hap.Characteristic.CurrentTemperature)
-      .on('get', this.handleCurrentTemperatureGet.bind(this));
+      if (typeof nox === 'number' && isFinite(nox)) {
+        this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, nox);
+      } else {
+        this.log.warn('Invalid NOx value:', nox);
+      }
 
-    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideDetected)
-      .on('get', this.handleCarbonDioxideDetectedGet.bind(this));
+      if (typeof temp === 'number' && isFinite(temp)) {
+        this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, temp);
+      } else {
+        this.log.warn('Invalid Temperature value:', temp);
+      }
 
-    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideLevel)
-      .on('get', this.handleCarbonDioxideLevelGet.bind(this));
+      if (typeof co2 === 'number' && isFinite(co2)) {
+        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideDetected, this.calculateCO2Detected(co2));
+        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, co2);
+      } else {
+        this.log.warn('Invalid CO2 value:', co2);
+      }
 
-    this.serviceHumid.getCharacteristic(hap.Characteristic.CurrentRelativeHumidity)
-      .on('get', this.handleCurrentRelativeHumidityGet.bind(this));
+      if (typeof humidity === 'number' && isFinite(humidity)) {
+        this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, humidity);
+      } else {
+        this.log.warn('Invalid Humidity value:', humidity);
+      }
+
+      this.service.updateCharacteristic(hap.Characteristic.AirQuality, this.calculateAirQuality(pm2_5));
+
+      this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
+        `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, Humidity: ${humidity}`);
+    }
   }
 
   private async fetchData() {

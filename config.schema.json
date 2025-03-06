@@ -21,6 +21,11 @@
               "type": "number",
               "default": 60000,
               "minimum": 1000
+            },
+            "useCompensatedValues": {
+              "title": "Use Compensated Values",
+              "type": "boolean",
+              "default": false
             }
           }
         }
@@ -43,6 +48,11 @@
             {
               "key": "sensors[].pollingInterval",
               "placeholder": 60000
+            },
+            {
+              "key": "sensors[].useCompensatedValues",
+              "type": "checkbox",
+              "title": "Use Compensated Values"
             }
           ]
         }
