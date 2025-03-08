@@ -125,11 +125,39 @@ class AirGradientSensor {
     this.serviceHumid = this.accessory.getService(hap.Service.HumiditySensor) ||
       this.accessory.addService(hap.Service.HumiditySensor);
 
-    this.setupCharacteristics();
+    this.updateCharacteristics();
     this.updateData();
   }
 
-  private setupCharacteristics() {
+  private async fetchData() {
+    try {
+      const response = await axios.get(this.apiUrl);
+      this.data = response.data;
+      this.log.info('Data fetched successfully:', this.data);
+
+      // Log the full response for debugging
+      this.log.debug('API response:', this.data);
+    } catch (error) {
+      this.log.error('Error fetching data from AirGradient API:', error);
+      throw error;
+    }
+  }
+
+  private async updateData() {
+    try {
+      await this.fetchData();
+      if (this.data) {
+        this.updateCharacteristics();
+      }
+    } catch (error) {
+      this.log.error('Error updating data:', error);
+    } finally {
+      // Schedule the next update
+      setTimeout(() => this.updateData(), this.pollingInterval);
+    }
+  }
+
+  private updateCharacteristics() {
     if (this.data) {
       // Use compensated values if enabled and available, otherwise fallback to the default values
       const pm2_5 = this.useCompensatedValues && this.data.pm02Compensated !== undefined
@@ -195,95 +223,6 @@ class AirGradientSensor {
 
       this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
         `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, Humidity: ${humidity}`);
-    }
-  }
-
-  private async fetchData() {
-    try {
-      const response = await axios.get(this.apiUrl);
-      this.data = response.data;
-      this.log.info('Data fetched successfully:', this.data);
-
-      // Log the full response for debugging
-      this.log.debug('API response:', this.data);
-    } catch (error) {
-      this.log.error('Error fetching data from AirGradient API:', error);
-      throw error;
-    }
-  }
-
-  private async updateData() {
-    try {
-      await this.fetchData();
-      if (this.data) {
-        this.updateCharacteristics();
-      }
-    } catch (error) {
-      this.log.error('Error updating data:', error);
-    } finally {
-      // Schedule the next update
-      setTimeout(() => this.updateData(), this.pollingInterval);
-    }
-  }
-
-  private updateCharacteristics() {
-    if (this.data) {
-      const pm2_5 = this.data.pm02;
-      const pm10 = this.data.pm10;
-      const tvoc = this.data.tvocIndex;
-      const nox = this.data.noxIndex;
-      const temp = this.data.atmp;
-      const co2 = this.data.rco2;
-      const rhum = this.data.rhum;
-
-      // Validate data before updating characteristics
-      if (typeof pm2_5 === 'number' && isFinite(pm2_5)) {
-        this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, pm2_5);
-      } else {
-        this.log.warn('Invalid PM2.5 value:', pm2_5);
-      }
-
-      if (typeof pm10 === 'number' && isFinite(pm10)) {
-        this.service.updateCharacteristic(hap.Characteristic.PM10Density, pm10);
-      } else {
-        this.log.warn('Invalid PM10 value:', pm10);
-      }
-
-      if (typeof tvoc === 'number' && isFinite(tvoc)) {
-        this.service.updateCharacteristic(hap.Characteristic.VOCDensity, tvoc);
-      } else {
-        this.log.warn('Invalid TVOC value:', tvoc);
-      }
-
-      if (typeof nox === 'number' && isFinite(nox)) {
-        this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, nox);
-      } else {
-        this.log.warn('Invalid NOx value:', nox);
-      }
-
-      if (typeof temp === 'number' && isFinite(temp)) {
-        this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, temp);
-      } else {
-        this.log.warn('Invalid Temperature value:', temp);
-      }
-
-      if (typeof co2 === 'number' && isFinite(co2)) {
-        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideDetected, this.calculateCO2Detected(co2));
-        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, co2);
-      } else {
-        this.log.warn('Invalid CO2 value:', co2);
-      }
-
-      if (typeof rhum === 'number' && isFinite(rhum)) {
-        this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, rhum);
-      } else {
-        this.log.warn('Invalid Humidity value:', rhum);
-      }
-
-      this.service.updateCharacteristic(hap.Characteristic.AirQuality, this.calculateAirQuality(pm2_5));
-
-      this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
-        `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, RHUM: ${rhum}`);
     }
   }
 
