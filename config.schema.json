@@ -26,6 +26,12 @@
               "title": "Use Compensated Values",
               "type": "boolean",
               "default": false
+            },
+            "co2AlertThreshold": {
+              "type": "number",
+              "title": "CO2 Alert Threshold",
+              "default": 800,
+              "description": "The CO\u2082 level (ppm) above which HomeKit shows an alert."
             }
           }
         }
@@ -53,6 +59,10 @@
               "key": "sensors[].useCompensatedValues",
               "type": "checkbox",
               "title": "Use Compensated Values"
+            },
+            {
+              "key": "sensors[].co2AlertThreshold",
+              "placeholder": 800
             }
           ]
         }

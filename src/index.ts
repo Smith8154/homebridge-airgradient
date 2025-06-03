@@ -39,6 +39,7 @@ interface AirGradientData {
 
 interface SensorConfig {
   serialno: string;
+  co2AlertThreshold?: number;
   pollingInterval?: number;
   useCompensatedValues?: boolean;
 }
@@ -100,14 +101,23 @@ class AirGradientSensor {
   private readonly serviceCO2: Service;
   private readonly serviceHumid: Service;
   private readonly useCompensatedValues: boolean;
+  private readonly co2AlertThreshold: number;
 
   constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: SensorConfig) {
     this.platform = platform;
     this.accessory = accessory;
     this.log = platform.log;
     this.serialno = sensorConfig.serialno;
-    this.pollingInterval = sensorConfig.pollingInterval || 60000; // Default to 1 minute
-    this.useCompensatedValues = sensorConfig.useCompensatedValues || false;
+
+    this.pollingInterval = (sensorConfig.pollingInterval && sensorConfig.pollingInterval > 0)
+      ? sensorConfig.pollingInterval
+      : 60000; // Default to 1 minute, must be higher than 0
+
+    this.useCompensatedValues = sensorConfig.useCompensatedValues ?? false;
+
+    this.co2AlertThreshold = (sensorConfig.co2AlertThreshold && sensorConfig.co2AlertThreshold > 0)
+      ? sensorConfig.co2AlertThreshold
+      : 800;
 
     // Construct the local API URL using the serialno
     this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
@@ -241,11 +251,9 @@ class AirGradientSensor {
   }
 
   private calculateCO2Detected(co2: number): number {
-    if (co2 <= 800) {
-      return hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_NORMAL;
-    } else {
-      return hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_ABNORMAL;
-    }
+    return co2 > this.co2AlertThreshold
+      ? hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_ABNORMAL
+      : hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_NORMAL;
   }
 
   private handleAirQualityGet(callback: (error: Error | null, value?: number) => void) {
