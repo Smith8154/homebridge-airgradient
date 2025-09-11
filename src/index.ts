@@ -48,7 +48,12 @@ interface SensorConfig {
 class AirGradientPlatform implements DynamicPlatformPlugin {
   public readonly log: Logging;
   public readonly api: API;
-  public readonly accessories: PlatformAccessory[] = [];
+
+  // Keep a stable map of cached and newly-created accessories by UUID
+  private readonly accessories = new Map<string, PlatformAccessory>();
+
+  // Persist sensor configs to act on them after didFinishLaunching
+  private readonly sensorConfigs: SensorConfig[] = [];
 
   constructor(log: Logging, config: PlatformConfig, api: API) {
     this.log = log;
@@ -56,35 +61,51 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
 
     hap = api.hap;
 
-    if (config.sensors) {
+    if (Array.isArray(config?.sensors)) {
       for (const sensorConfig of config.sensors as SensorConfig[]) {
-        this.log.info('Initializing sensor with serial number:', sensorConfig.serialno);
-        this.addAccessory(sensorConfig);
+        if (sensorConfig?.serialno) {
+          this.sensorConfigs.push(sensorConfig);
+          this.log.info('Queued sensor for init with serial number:', sensorConfig.serialno);
+        }
       }
     }
 
-    api.on('didFinishLaunching', () => {
+    // Only manipulate accessories after Homebridge has finished launching, so cache restore happens first.
+    this.api.on('didFinishLaunching', () => {
       this.log.info('Did finish launching');
+
+      for (const sensorConfig of this.sensorConfigs) {
+        const uuid = hap.uuid.generate(sensorConfig.serialno);
+        const cached = this.accessories.get(uuid);
+
+        if (cached) {
+          this.log.info('Restoring existing accessory from cache:', cached.displayName);
+          if (!cached.context.serial) {
+            cached.context.serial = sensorConfig.serialno;
+          }
+          new AirGradientSensor(this, cached, sensorConfig);
+        } else {
+          this.log.info('Adding new accessory for serial number:', sensorConfig.serialno);
+          const accessory = new this.api.platformAccessory(
+            `AirGradient Sensor ${sensorConfig.serialno}`,
+            uuid,
+          );
+          accessory.context.serial = sensorConfig.serialno;
+          new AirGradientSensor(this, accessory, sensorConfig);
+          this.api.registerPlatformAccessories(
+            'homebridge-airgradient',
+            'AirGradientPlatform',
+            [accessory],
+          );
+
+          this.accessories.set(uuid, accessory);
+        }
+      }
     });
   }
 
-  addAccessory(sensorConfig: SensorConfig) {
-    const uuid = hap.uuid.generate(sensorConfig.serialno);
-    const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
-
-    if (existingAccessory) {
-      this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-      new AirGradientSensor(this, existingAccessory, sensorConfig);
-    } else {
-      this.log.info('Adding new accessory for serial number:', sensorConfig.serialno);
-      const accessory = new this.api.platformAccessory(`AirGradient Sensor ${sensorConfig.serialno}`, uuid);
-      new AirGradientSensor(this, accessory, sensorConfig);
-      this.api.registerPlatformAccessories('homebridge-airgradient', 'AirGradientPlatform', [accessory]);
-    }
-  }
-
   configureAccessory(accessory: PlatformAccessory) {
-    this.accessories.push(accessory);
+    this.accessories.set(accessory.UUID, accessory);
   }
 }
 
@@ -135,7 +156,44 @@ class AirGradientSensor {
     this.serviceHumid = this.accessory.getService(hap.Service.HumiditySensor) ||
       this.accessory.addService(hap.Service.HumiditySensor);
 
-    this.updateCharacteristics();
+    // Ensure all optional characteristics exist (getCharacteristic ensures creation for optionals)
+    this.service.getCharacteristic(hap.Characteristic.AirQuality);
+    this.service.getCharacteristic(hap.Characteristic.PM2_5Density);
+    this.service.getCharacteristic(hap.Characteristic.PM10Density);
+
+    if (!this.service.testCharacteristic(hap.Characteristic.VOCDensity)) {
+      this.service.addCharacteristic(hap.Characteristic.VOCDensity);
+    }
+    if (!this.service.testCharacteristic(hap.Characteristic.NitrogenDioxideDensity)) {
+      this.service.addCharacteristic(hap.Characteristic.NitrogenDioxideDensity);
+    }
+
+    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideDetected);
+    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideLevel);
+
+    // Initialize safe placeholder values so the Home hub never sees "missing" nodes
+
+    this.service.updateCharacteristic(
+      hap.Characteristic.AirQuality,
+      (hap.Characteristic.AirQuality as any).UNKNOWN ?? hap.Characteristic.AirQuality.FAIR,
+    );
+    this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, 0);
+    this.service.updateCharacteristic(hap.Characteristic.PM10Density, 0);
+    this.service.updateCharacteristic(hap.Characteristic.VOCDensity, 0);
+    this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, 0);
+
+    this.serviceCO2.updateCharacteristic(
+      hap.Characteristic.CarbonDioxideDetected,
+      hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_NORMAL,
+    );
+    this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, 0);
+
+    this.serviceTemp.getCharacteristic(hap.Characteristic.CurrentTemperature);
+    this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, 0);
+
+    this.serviceHumid.getCharacteristic(hap.Characteristic.CurrentRelativeHumidity);
+    this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, 0);
+
     this.updateData();
   }
 
