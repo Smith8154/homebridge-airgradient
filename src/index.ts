@@ -157,7 +157,7 @@ class AirGradientSensor {
       : 800;
 
     // Construct the local API URL using the serialno
-    this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
+    this.apiUrl = `airgradient_${this.serialno}.local/measures/current`;
 
     this.accessory.getService(hap.Service.AccessoryInformation)!
       .setCharacteristic(hap.Characteristic.Manufacturer, 'AirGradient')
