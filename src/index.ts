@@ -218,7 +218,7 @@ class AirGradientSensor {
     try {
     // Strongly type the expected payload
       const response = await axios.get<AirGradientData>(this.apiUrl, {
-        timeout: 5000, // optional: avoid hanging forever
+        timeout: 30000, // optional: avoid hanging forever
         headers: { 'Accept': 'application/json' },
       // validateStatus: (s) => s >= 200 && s < 400, // optional: treat 3xx as ok if your devices redirect
       });
