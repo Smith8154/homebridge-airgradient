@@ -109,6 +109,22 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
   }
 }
 
+function isAirGradientData(x: unknown): x is AirGradientData {
+  if (x === null || typeof x !== 'object') {
+    return false;
+  }
+  const o = x as Record<string, unknown>;
+
+  // Minimal required fields you actually rely on elsewhere
+  return (
+    typeof o.pm02 === 'number' &&
+    typeof o.pm10 === 'number' &&
+    typeof o.rco2 === 'number' &&
+    typeof o.atmp === 'number' &&
+    typeof o.rhum === 'number'
+  );
+}
+
 class AirGradientSensor {
   private readonly platform: AirGradientPlatform;
   private readonly accessory: PlatformAccessory;
@@ -200,17 +216,50 @@ class AirGradientSensor {
 
   private async fetchData() {
     try {
-      const response = await axios.get(this.apiUrl);
-      this.data = response.data;
+    // Strongly type the expected payload
+      const response = await axios.get<AirGradientData>(this.apiUrl, {
+        timeout: 5000, // optional: avoid hanging forever
+        headers: { 'Accept': 'application/json' },
+      // validateStatus: (s) => s >= 200 && s < 400, // optional: treat 3xx as ok if your devices redirect
+      });
+
+      const payload = response.data;
+
+      // Runtime validation: ensures critical numeric fields exist
+      if (!isAirGradientData(payload)) {
+        this.log.error('AirGradient API returned unexpected data format:', payload);
+        return; // keep previous this.data (so we don’t overwrite with bad data)
+      }
+
+      // All good—commit and log
+      this.data = payload;
       this.log.info('Data fetched successfully:', this.data);
 
-      // Log the full response for debugging
+      // Optional extra debug
       this.log.debug('API response:', this.data);
-    } catch (error) {
-      this.log.error('Error fetching data from AirGradient API:', error);
-      throw error;
+
+    } catch (err) {
+    // Make axios/network errors readable without losing detail
+      const e = err as unknown;
+      if (axios.isAxiosError(e)) {
+        this.log.error(
+          `Axios error fetching AirGradient data: ${e.message}` +
+        (e.response ? ` (status ${e.response.status})` : '') +
+        (e.code ? ` [code ${e.code}]` : ''),
+        );
+        if (e.response?.data) {
+          this.log.debug('Error response body:', e.response.data);
+        }
+      } else if (e instanceof Error) {
+        this.log.error('Error fetching data from AirGradient API:', e.message);
+        this.log.debug(e.stack || 'no stack');
+      } else {
+        this.log.error('Unknown error fetching data from AirGradient API:', e);
+      }
+      throw err; // keep existing control flow in updateData()
     }
   }
+
 
   private async updateData() {
     try {
