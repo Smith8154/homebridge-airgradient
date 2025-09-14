@@ -175,7 +175,8 @@ class AirGradientSensor {
 
     this.service.updateCharacteristic(
       hap.Characteristic.AirQuality,
-      (hap.Characteristic.AirQuality as any).UNKNOWN ?? hap.Characteristic.AirQuality.FAIR,
+      (hap.Characteristic.AirQuality as unknown as Record<string, number>).UNKNOWN
+    ?? hap.Characteristic.AirQuality.FAIR,
     );
     this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, 0);
     this.service.updateCharacteristic(hap.Characteristic.PM10Density, 0);
