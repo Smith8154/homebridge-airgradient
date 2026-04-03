@@ -48,6 +48,8 @@ interface SensorConfig {
 class AirGradientPlatform implements DynamicPlatformPlugin {
   public readonly log: Logging;
   public readonly api: API;
+  public readonly fetchLogs: boolean;
+  public readonly verboseLogs: boolean;
 
   // Keep a stable map of cached and newly-created accessories by UUID
   private readonly accessories = new Map<string, PlatformAccessory>();
@@ -58,6 +60,8 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
   constructor(log: Logging, config: PlatformConfig, api: API) {
     this.log = log;
     this.api = api;
+    this.fetchLogs = config?.fetchLogs ?? true;
+    this.verboseLogs = config?.verboseLogs ?? true;
 
     hap = api.hap;
 
@@ -139,6 +143,8 @@ class AirGradientSensor {
   private readonly serviceHumid: Service;
   private readonly useCompensatedValues: boolean;
   private readonly co2AlertThreshold: number;
+  private readonly fetchLogs: boolean;
+  private readonly verboseLogs: boolean;
 
   constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: SensorConfig) {
     this.platform = platform;
@@ -155,6 +161,9 @@ class AirGradientSensor {
     this.co2AlertThreshold = (sensorConfig.co2AlertThreshold && sensorConfig.co2AlertThreshold > 0)
       ? sensorConfig.co2AlertThreshold
       : 800;
+
+    this.fetchLogs = platform.fetchLogs;
+    this.verboseLogs = platform.verboseLogs;
 
     // Construct the local API URL using the serialno
     this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
@@ -227,34 +236,63 @@ class AirGradientSensor {
 
       // Runtime validation: ensures critical numeric fields exist
       if (!isAirGradientData(payload)) {
-        this.log.error('AirGradient API returned unexpected data format:', payload);
-        return; // keep previous this.data (so we don’t overwrite with bad data)
+        if (this.fetchLogs) {
+          if (this.verboseLogs) {
+            this.log.error('AirGradient API returned unexpected data format:', payload);
+          } else {
+            this.log.error('AirGradient API returned unexpected data format.');
+          }
+        }
+        return; // keep previous this.data (so we don't overwrite with bad data)
       }
 
       // All good—commit and log
       this.data = payload;
-      this.log.info('Data fetched successfully:', this.data);
+      if (this.fetchLogs) {
+        if (this.verboseLogs) {
+          this.log.info('Data fetched successfully:', this.data);
+        } else {
+          this.log.info('Data fetched successfully.');
+        }
+      }
 
       // Optional extra debug
       this.log.debug('API response:', this.data);
 
     } catch (err) {
-    // Make axios/network errors readable without losing detail
-      const e = err as unknown;
-      if (axios.isAxiosError(e)) {
-        this.log.error(
-          `Axios error fetching AirGradient data: ${e.message}` +
-        (e.response ? ` (status ${e.response.status})` : '') +
-        (e.code ? ` [code ${e.code}]` : ''),
-        );
-        if (e.response?.data) {
-          this.log.debug('Error response body:', e.response.data);
+      if (this.fetchLogs) {
+        // Make axios/network errors readable without losing detail
+        const e = err as unknown;
+        if (axios.isAxiosError(e)) {
+          if (this.verboseLogs) {
+            this.log.error(
+              `Axios error fetching AirGradient data: ${e.message}` +
+              (e.response ? ` (status ${e.response.status})` : '') +
+              (e.code ? ` [code ${e.code}]` : ''),
+            );
+            if (e.response?.data) {
+              this.log.debug('Error response body:', e.response.data);
+            }
+          } else {
+            const cause = (e.cause as { address?: string; port?: number; code?: string } | undefined);
+            const addr = cause?.address && cause?.port ? ` ${cause.address}:${cause.port}` : '';
+            const code = cause?.code || e.code || '';
+            const reason = code === 'EHOSTUNREACH' ? 'host unreachable' :
+              code === 'ECONNREFUSED' ? 'connection refused' :
+                code === 'ETIMEDOUT' ? 'timeout' :
+                  code === 'ENOTFOUND' ? 'host not found' : e.message;
+            this.log.error(`Error fetching data: ${reason}${addr}`);
+          }
+        } else if (e instanceof Error) {
+          if (this.verboseLogs) {
+            this.log.error('Error fetching data from AirGradient API:', e.message);
+            this.log.debug(e.stack || 'no stack');
+          } else {
+            this.log.error(`Error fetching data: ${e.message}`);
+          }
+        } else {
+          this.log.error('Unknown error fetching data from AirGradient API:', e);
         }
-      } else if (e instanceof Error) {
-        this.log.error('Error fetching data from AirGradient API:', e.message);
-        this.log.debug(e.stack || 'no stack');
-      } else {
-        this.log.error('Unknown error fetching data from AirGradient API:', e);
       }
       throw err; // keep existing control flow in updateData()
     }
@@ -268,7 +306,22 @@ class AirGradientSensor {
         this.updateCharacteristics();
       }
     } catch (error) {
-      this.log.error('Error updating data:', error);
+      if (this.fetchLogs) {
+        if (this.verboseLogs) {
+          this.log.error('Error updating data:', error);
+        } else {
+          const e = error as { cause?: { code?: string; address?: string; port?: number } };
+          const cause = e?.cause;
+          const addr = cause?.address && cause?.port ? ` ${cause.address}:${cause.port}` : '';
+          const code = cause?.code || '';
+          const reason = code === 'EHOSTUNREACH' ? 'host unreachable' :
+            code === 'ECONNREFUSED' ? 'connection refused' :
+              code === 'ETIMEDOUT' ? 'timeout' :
+                code === 'ENOTFOUND' ? 'host not found' :
+                  (error instanceof Error ? error.message : String(error));
+          this.log.error(`Error updating data: ${reason}${addr}`);
+        }
+      }
     } finally {
       // Schedule the next update
       setTimeout(() => this.updateData(), this.pollingInterval);
@@ -339,8 +392,14 @@ class AirGradientSensor {
 
       this.service.updateCharacteristic(hap.Characteristic.AirQuality, this.calculateAirQuality(pm2_5));
 
-      this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
-        `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, Humidity: ${humidity}`);
+      if (this.fetchLogs) {
+        if (this.verboseLogs) {
+          this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
+            `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, Humidity: ${humidity}`);
+        } else {
+          this.log.info('Updated characteristics.');
+        }
+      }
     }
   }
 

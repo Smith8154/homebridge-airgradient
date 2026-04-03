@@ -5,6 +5,18 @@
   "schema": {
     "type": "object",
     "properties": {
+      "fetchLogs": {
+        "title": "Fetch Logs",
+        "type": "boolean",
+        "default": true,
+        "description": "When disabled, all log output during data fetching is suppressed."
+      },
+      "verboseLogs": {
+        "title": "Verbose Logs",
+        "type": "boolean",
+        "default": true,
+        "description": "When disabled, log messages omit data payloads and stack traces."
+      },
       "sensors": {
         "type": "array",
         "title": "AirGradient Sensors",
@@ -42,6 +54,16 @@
     {
       "type": "section",
       "items": [
+        {
+          "key": "verboseLogs",
+          "type": "checkbox",
+          "title": "Verbose Logs"
+        },
+        {
+          "key": "fetchLogs",
+          "type": "checkbox",
+          "title": "Fetch Logs"
+        },
         {
           "key": "sensors",
           "type": "array",
