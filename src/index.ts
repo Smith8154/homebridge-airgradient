@@ -305,23 +305,8 @@ class AirGradientSensor {
       if (this.data) {
         this.updateCharacteristics();
       }
-    } catch (error) {
-      if (this.fetchLogs) {
-        if (this.verboseLogs) {
-          this.log.error('Error updating data:', error);
-        } else {
-          const e = error as { cause?: { code?: string; address?: string; port?: number } };
-          const cause = e?.cause;
-          const addr = cause?.address && cause?.port ? ` ${cause.address}:${cause.port}` : '';
-          const code = cause?.code || '';
-          const reason = code === 'EHOSTUNREACH' ? 'host unreachable' :
-            code === 'ECONNREFUSED' ? 'connection refused' :
-              code === 'ETIMEDOUT' ? 'timeout' :
-                code === 'ENOTFOUND' ? 'host not found' :
-                  (error instanceof Error ? error.message : String(error));
-          this.log.error(`Error updating data: ${reason}${addr}`);
-        }
-      }
+    } catch {
+      // fetchData already logged the error
     } finally {
       // Schedule the next update
       setTimeout(() => this.updateData(), this.pollingInterval);
@@ -423,77 +408,6 @@ class AirGradientSensor {
       : hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_NORMAL;
   }
 
-  private handleAirQualityGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.calculateAirQuality(this.data.pm02));
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  private handlePM2_5DensityGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.pm02);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  private handlePM10DensityGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.pm10);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  private handleVOCDensityGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.tvocIndex);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  private handleNitrogenDioxideDensityGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.noxIndex);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  handleCurrentTemperatureGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.atmp);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  handleCarbonDioxideDetectedGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.calculateCO2Detected(this.data.rco2));
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  handleCarbonDioxideLevelGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.rco2);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
-
-  handleCurrentRelativeHumidityGet(callback: (error: Error | null, value?: number) => void) {
-    if (this.data) {
-      callback(null, this.data.rhum);
-    } else {
-      callback(new Error('No data available'));
-    }
-  }
 }
 
 export = (homebridge: API) => {
