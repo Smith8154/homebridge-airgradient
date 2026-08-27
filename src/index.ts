@@ -1,13 +1,17 @@
 import axios from 'axios';
 import {
   API,
+  Characteristic,
   DynamicPlatformPlugin,
   PlatformAccessory,
   PlatformConfig,
   Service,
   Logging,
   HAP,
+  WithUUID,
 } from 'homebridge';
+
+type CharacteristicClass = WithUUID<{ new (): Characteristic }>;
 
 let hap: HAP;
 
@@ -15,13 +19,13 @@ interface AirGradientData {
   locationId: number;
   pm01: number;
   pm02: number;
-  pm02Compensated?: number;
+  pm02Compensated?: number | null;
   pm10: number;
   pm003Count: number;
   atmp: number;
-  atmpCompensated?: number;
+  atmpCompensated?: number | null;
   rhum: number;
-  rhumCompensated?: number;
+  rhumCompensated?: number | null;
   rco2: number;
   tvoc: number;
   wifi: number;
@@ -34,8 +38,9 @@ interface AirGradientData {
   model: string | number;
   firmwareVersion?: string | null;
   firmware?: string | null;
-  tvocIndex: number;
-  noxIndex: number;
+  // Only present on models that carry the corresponding sensor.
+  tvocIndex?: number;
+  noxIndex?: number;
 }
 
 interface SensorConfig {
@@ -43,7 +48,16 @@ interface SensorConfig {
   co2AlertThreshold?: number;
   pollingInterval?: number;
   useCompensatedValues?: boolean;
+  offlineAfterFailures?: number;
 }
+
+const PLUGIN_NAME = 'homebridge-airgradient';
+const PLATFORM_NAME = 'AirGradientPlatform';
+
+// Consecutive failed polls before a sensor is reported as unavailable in HomeKit.
+// At the default 60s interval that is roughly three minutes of silence, long enough
+// to ride out a router reboot without flapping the accessory.
+const DEFAULT_OFFLINE_AFTER_FAILURES = 3;
 
 
 class AirGradientPlatform implements DynamicPlatformPlugin {
@@ -62,16 +76,34 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
     this.log = log;
     this.api = api;
     this.fetchLogs = config?.fetchLogs ?? true;
-    this.verboseLogs = config?.verboseLogs ?? true;
+    this.verboseLogs = config?.verboseLogs ?? false;
 
     hap = api.hap;
 
     if (Array.isArray(config?.sensors)) {
+      const seen = new Set<string>();
+
       for (const sensorConfig of config.sensors as SensorConfig[]) {
-        if (sensorConfig?.serialno) {
-          this.sensorConfigs.push(sensorConfig);
-          this.log.info('Queued sensor for init with serial number:', sensorConfig.serialno);
+        if (!sensorConfig?.serialno) {
+          continue;
         }
+
+        // Hand-edited config.json can supply a bare number, which hap.uuid.generate rejects.
+        const serialno = String(sensorConfig.serialno);
+
+        // Two entries with one serial produce one UUID, so the second registration would
+        // collide and both pollers would hit the same device. Keep the first entry.
+        if (seen.has(serialno)) {
+          this.log.warn(
+            `Ignoring duplicate sensor entry for serial number ${serialno}. ` +
+            'Each sensor must appear only once; the first entry\'s settings are used.',
+          );
+          continue;
+        }
+
+        seen.add(serialno);
+        this.sensorConfigs.push({ ...sensorConfig, serialno });
+        this.log.info('Queued sensor for init with serial number:', serialno);
       }
     }
 
@@ -79,8 +111,11 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
     this.api.on('didFinishLaunching', () => {
       this.log.info('Did finish launching');
 
+      const configuredUuids = new Set<string>();
+
       for (const sensorConfig of this.sensorConfigs) {
         const uuid = hap.uuid.generate(sensorConfig.serialno);
+        configuredUuids.add(uuid);
         const cached = this.accessories.get(uuid);
 
         if (cached) {
@@ -97,16 +132,39 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
           );
           accessory.context.serial = sensorConfig.serialno;
           new AirGradientSensor(this, accessory, sensorConfig);
-          this.api.registerPlatformAccessories(
-            'homebridge-airgradient',
-            'AirGradientPlatform',
-            [accessory],
-          );
+          this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
 
           this.accessories.set(uuid, accessory);
         }
       }
+
+      this.removeOrphanedAccessories(configuredUuids);
     });
+  }
+
+  // Drops cached accessories whose sensor is no longer in the config, which is the only
+  // signal that the user actually wants them gone. A sensor that is merely offline still
+  // has its config entry and is left alone -- unregistering it would throw away its room,
+  // name, scenes and automations over what may be a temporary network outage.
+  private removeOrphanedAccessories(configuredUuids: Set<string>) {
+    const orphans: PlatformAccessory[] = [];
+
+    for (const [uuid, accessory] of this.accessories) {
+      if (!configuredUuids.has(uuid)) {
+        orphans.push(accessory);
+        this.accessories.delete(uuid);
+      }
+    }
+
+    if (orphans.length === 0) {
+      return;
+    }
+
+    for (const accessory of orphans) {
+      this.log.info('Removing accessory no longer present in the config:', accessory.displayName);
+    }
+
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, orphans);
   }
 
   configureAccessory(accessory: PlatformAccessory) {
@@ -169,14 +227,15 @@ function isAirGradientData(x: unknown): x is AirGradientData {
 }
 
 class AirGradientSensor {
-  private readonly platform: AirGradientPlatform;
   private readonly accessory: PlatformAccessory;
   private readonly log: Logging;
   private readonly serialno: string;
   private readonly pollingInterval: number;
   private readonly apiUrl: string;
-  private data: AirGradientData | null = null;
   private firmwareLookupWarned = false;
+  private consecutiveFailures = 0;
+  private offline = false;
+  private readonly offlineAfterFailures: number;
   private readonly service: Service;
   private readonly serviceTemp: Service;
   private readonly serviceCO2: Service;
@@ -187,7 +246,6 @@ class AirGradientSensor {
   private readonly verboseLogs: boolean;
 
   constructor(platform: AirGradientPlatform, accessory: PlatformAccessory, sensorConfig: SensorConfig) {
-    this.platform = platform;
     this.accessory = accessory;
     this.log = platform.log;
     this.serialno = sensorConfig.serialno;
@@ -201,6 +259,10 @@ class AirGradientSensor {
     this.co2AlertThreshold = (sensorConfig.co2AlertThreshold && sensorConfig.co2AlertThreshold > 0)
       ? sensorConfig.co2AlertThreshold
       : 800;
+
+    this.offlineAfterFailures = (sensorConfig.offlineAfterFailures && sensorConfig.offlineAfterFailures > 0)
+      ? Math.floor(sensorConfig.offlineAfterFailures)
+      : DEFAULT_OFFLINE_AFTER_FAILURES;
 
     this.fetchLogs = platform.fetchLogs;
     this.verboseLogs = platform.verboseLogs;
@@ -221,46 +283,54 @@ class AirGradientSensor {
     this.serviceHumid = this.accessory.getService(hap.Service.HumiditySensor) ||
       this.accessory.addService(hap.Service.HumiditySensor);
 
-    // Ensure all optional characteristics exist (getCharacteristic ensures creation for optionals)
-    this.service.getCharacteristic(hap.Characteristic.AirQuality);
-    this.service.getCharacteristic(hap.Characteristic.PM2_5Density);
-    this.service.getCharacteristic(hap.Characteristic.PM10Density);
-
-    if (!this.service.testCharacteristic(hap.Characteristic.VOCDensity)) {
-      this.service.addCharacteristic(hap.Characteristic.VOCDensity);
-    }
-    if (!this.service.testCharacteristic(hap.Characteristic.NitrogenDioxideDensity)) {
-      this.service.addCharacteristic(hap.Characteristic.NitrogenDioxideDensity);
-    }
-
-    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideDetected);
-    this.serviceCO2.getCharacteristic(hap.Characteristic.CarbonDioxideLevel);
-
-    // Initialize safe placeholder values so the Home hub never sees "missing" nodes
-
-    this.service.updateCharacteristic(
-      hap.Characteristic.AirQuality,
-      (hap.Characteristic.AirQuality as unknown as Record<string, number>).UNKNOWN
-    ?? hap.Characteristic.AirQuality.FAIR,
-    );
-    this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, 0);
-    this.service.updateCharacteristic(hap.Characteristic.PM10Density, 0);
-    this.service.updateCharacteristic(hap.Characteristic.VOCDensity, 0);
-    this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, 0);
-
-    this.serviceCO2.updateCharacteristic(
-      hap.Characteristic.CarbonDioxideDetected,
-      hap.Characteristic.CarbonDioxideDetected.CO2_LEVELS_NORMAL,
-    );
-    this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, 0);
-
-    this.serviceTemp.getCharacteristic(hap.Characteristic.CurrentTemperature);
-    this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, 0);
-
-    this.serviceHumid.getCharacteristic(hap.Characteristic.CurrentRelativeHumidity);
-    this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, 0);
+    this.markReadingsUnavailable('AirGradient sensor has not reported a reading yet');
 
     this.updateData();
+  }
+
+  // Readings every model reports; isAirGradientData() guarantees each one's source field.
+  private coreReadings(): Array<[Service, CharacteristicClass]> {
+    const C = hap.Characteristic;
+    return [
+      [this.service, C.AirQuality],
+      [this.service, C.PM2_5Density],
+      [this.service, C.PM10Density],
+      [this.serviceTemp, C.CurrentTemperature],
+      [this.serviceCO2, C.CarbonDioxideLevel],
+      [this.serviceCO2, C.CarbonDioxideDetected],
+      [this.serviceHumid, C.CurrentRelativeHumidity],
+    ];
+  }
+
+  // Model-dependent readings, created lazily by the first payload that carries them.
+  // They are deliberately absent from coreReadings(): a sensor the device doesn't have
+  // would otherwise sit in an error state forever and strand the whole accessory on
+  // "No Response". Only mark them when they already exist on the service.
+  private optionalReadings(): Array<[Service, CharacteristicClass]> {
+    const C = hap.Characteristic;
+    const entries: Array<[Service, CharacteristicClass]> = [];
+
+    if (this.service.testCharacteristic(C.VOCDensity)) {
+      entries.push([this.service, C.VOCDensity]);
+    }
+    if (this.service.testCharacteristic(C.NitrogenDioxideDensity)) {
+      entries.push([this.service, C.NitrogenDioxideDensity]);
+    }
+
+    return entries;
+  }
+
+  // Puts readings into an error state, which HomeKit surfaces as "No Response". Pushing a
+  // number instead would look like a real measurement to the Home app and to any automation
+  // watching temperature or CO2. The next accepted reading clears the status by itself.
+  private markReadingsUnavailable(reason: string, includeOptional = false) {
+    const entries = includeOptional
+      ? [...this.coreReadings(), ...this.optionalReadings()]
+      : this.coreReadings();
+
+    for (const [service, characteristic] of entries) {
+      service.updateCharacteristic(characteristic, new Error(reason));
+    }
   }
 
   // Writes the accessory's identity onto the AccessoryInformation service from
@@ -328,18 +398,17 @@ class AirGradientSensor {
     }
   }
 
-  private async fetchData() {
+  // Returns the payload, or null if the request failed or the response was unusable.
+  // Either way HomeKit keeps its current values rather than being fed garbage.
+  private async fetchData(): Promise<AirGradientData | null> {
     try {
-    // Strongly type the expected payload
       const response = await axios.get<AirGradientData>(this.apiUrl, {
-        timeout: 30000, // optional: avoid hanging forever
+        timeout: 30000,
         headers: { 'Accept': 'application/json' },
-      // validateStatus: (s) => s >= 200 && s < 400, // optional: treat 3xx as ok if your devices redirect
       });
 
       const payload = response.data;
 
-      // Runtime validation: ensures critical numeric fields exist
       if (!isAirGradientData(payload)) {
         if (this.fetchLogs) {
           if (this.verboseLogs) {
@@ -348,148 +417,187 @@ class AirGradientSensor {
             this.log.error('AirGradient API returned unexpected data format.');
           }
         }
-        return; // keep previous this.data (so we don't overwrite with bad data)
+        return null;
       }
 
-      // All good—commit and log
-      this.data = payload;
       if (this.fetchLogs) {
         if (this.verboseLogs) {
-          this.log.info('Data fetched successfully:', this.data);
+          this.log.info('Data fetched successfully:', payload);
         } else {
           this.log.info('Data fetched successfully.');
         }
       }
+      this.log.debug('API response:', payload);
 
-      // Optional extra debug
-      this.log.debug('API response:', this.data);
-
+      return payload;
     } catch (err) {
-      if (this.fetchLogs) {
-        // Make axios/network errors readable without losing detail
-        const e = err as unknown;
-        if (axios.isAxiosError(e)) {
-          if (this.verboseLogs) {
-            this.log.error(
-              `Axios error fetching AirGradient data: ${e.message}` +
-              (e.response ? ` (status ${e.response.status})` : '') +
-              (e.code ? ` [code ${e.code}]` : ''),
-            );
-            if (e.response?.data) {
-              this.log.debug('Error response body:', e.response.data);
-            }
-          } else {
-            const cause = (e.cause as { address?: string; port?: number; code?: string } | undefined);
-            const addr = cause?.address && cause?.port ? ` ${cause.address}:${cause.port}` : '';
-            const code = cause?.code || e.code || '';
-            const reason = code === 'EHOSTUNREACH' ? 'host unreachable' :
-              code === 'ECONNREFUSED' ? 'connection refused' :
-                code === 'ETIMEDOUT' ? 'timeout' :
-                  code === 'ENOTFOUND' ? 'host not found' : e.message;
-            this.log.error(`Error fetching data: ${reason}${addr}`);
-          }
-        } else if (e instanceof Error) {
-          if (this.verboseLogs) {
-            this.log.error('Error fetching data from AirGradient API:', e.message);
-            this.log.debug(e.stack || 'no stack');
-          } else {
-            this.log.error(`Error fetching data: ${e.message}`);
-          }
-        } else {
-          this.log.error('Unknown error fetching data from AirGradient API:', e);
-        }
-      }
-      throw err; // keep existing control flow in updateData()
+      this.logFetchError(err);
+      return null;
     }
   }
 
+  // Make axios/network errors readable without losing detail.
+  private logFetchError(err: unknown) {
+    if (!this.fetchLogs) {
+      return;
+    }
+
+    if (axios.isAxiosError(err)) {
+      if (this.verboseLogs) {
+        this.log.error(
+          `Axios error fetching AirGradient data: ${err.message}` +
+          (err.response ? ` (status ${err.response.status})` : '') +
+          (err.code ? ` [code ${err.code}]` : ''),
+        );
+        if (err.response?.data) {
+          this.log.debug('Error response body:', err.response.data);
+        }
+      } else {
+        const cause = (err.cause as { address?: string; port?: number; code?: string } | undefined);
+        const addr = cause?.address && cause?.port ? ` ${cause.address}:${cause.port}` : '';
+        const code = cause?.code || err.code || '';
+        const reason = code === 'EHOSTUNREACH' ? 'host unreachable' :
+          code === 'ECONNREFUSED' ? 'connection refused' :
+            code === 'ETIMEDOUT' ? 'timeout' :
+              code === 'ENOTFOUND' ? 'host not found' : err.message;
+        this.log.error(`Error fetching data: ${reason}${addr}`);
+      }
+    } else if (err instanceof Error) {
+      if (this.verboseLogs) {
+        this.log.error('Error fetching data from AirGradient API:', err.message);
+        this.log.debug(err.stack || 'no stack');
+      } else {
+        this.log.error(`Error fetching data: ${err.message}`);
+      }
+    } else {
+      this.log.error('Unknown error fetching data from AirGradient API:', err);
+    }
+  }
+
+  private handlePollSuccess(data: AirGradientData) {
+    if (this.offline) {
+      this.log.info(`Sensor ${this.serialno} is responding again after ${this.consecutiveFailures} failed attempts.`);
+      this.offline = false;
+    }
+
+    this.consecutiveFailures = 0;
+    this.refreshAccessoryInformation(data);
+    this.updateCharacteristics(data);
+  }
+
+  // A single missed poll is usually a Wi-Fi hiccup, so hold the last known readings and only
+  // report the sensor as unavailable once it has stayed silent for the configured number of
+  // attempts. An unusable payload counts too: the device answered, but told us nothing usable.
+  private handlePollFailure() {
+    this.consecutiveFailures++;
+
+    if (this.offline) {
+      return;
+    }
+
+    if (this.consecutiveFailures < this.offlineAfterFailures) {
+      this.log.debug(
+        `Poll failed (${this.consecutiveFailures} of ${this.offlineAfterFailures} before the sensor is marked offline).`,
+      );
+      return;
+    }
+
+    this.offline = true;
+    this.log.warn(
+      `No usable response from sensor ${this.serialno} after ${this.consecutiveFailures} consecutive attempts; ` +
+      'reporting it as unavailable in HomeKit until it responds again.',
+    );
+    this.markReadingsUnavailable(`AirGradient sensor ${this.serialno} is not responding`, true);
+  }
 
   private async updateData() {
     try {
-      await this.fetchData();
-      if (this.data) {
-        this.refreshAccessoryInformation(this.data);
-        this.updateCharacteristics();
+      const data = await this.fetchData();
+      if (data) {
+        this.handlePollSuccess(data);
+      } else {
+        this.handlePollFailure();
       }
-    } catch {
-      // fetchData already logged the error
+    } catch (err) {
+      // fetchData swallows its own errors, so anything here is a bug on the update path.
+      // Catch it regardless so a single bad poll can't stop the polling loop.
+      this.log.debug('Unexpected error while updating accessory:', err);
     } finally {
-      // Schedule the next update
       setTimeout(() => this.updateData(), this.pollingInterval);
     }
   }
 
-  private updateCharacteristics() {
-    if (this.data) {
-      // Use compensated values if enabled and available, otherwise fallback to the default values
-      const pm2_5 = this.useCompensatedValues && this.data.pm02Compensated !== undefined
-        ? this.data.pm02Compensated
-        : this.data.pm02;
-      const temp = this.useCompensatedValues && this.data.atmpCompensated !== undefined
-        ? this.data.atmpCompensated
-        : this.data.atmp;
-      const humidity = this.useCompensatedValues && this.data.rhumCompensated !== undefined
-        ? this.data.rhumCompensated
-        : this.data.rhum;
+  // Falls back to the raw reading when compensation is off or the device left the
+  // compensated field null, which is better than pushing an empty value to HomeKit.
+  private preferred(compensated: number | undefined | null, raw: number): number {
+    return this.useCompensatedValues && compensated !== undefined && compensated !== null
+      ? compensated
+      : raw;
+  }
 
-      // Other values remain the same
-      const pm10 = this.data.pm10;
-      const tvoc = this.data.tvocIndex;
-      const nox = this.data.noxIndex;
-      const co2 = this.data.rco2;
+  // Pushes one reading, returning whether it was actually accepted.
+  // A sensor the device doesn't carry is absent from the payload, and some readings come
+  // back below their valid range when the sensor is warming up or faulted; neither is worth
+  // a warning every polling interval, so they are logged at debug and left unchanged.
+  private applyReading(
+    service: Service,
+    characteristic: CharacteristicClass,
+    label: string,
+    value: number | undefined,
+    min = 0,
+  ): boolean {
+    if (value === undefined || value === null) {
+      this.log.debug(`${label} not reported by this device; leaving characteristic unchanged.`);
+      return false;
+    }
 
-      if (typeof pm2_5 === 'number' && isFinite(pm2_5)) {
-        this.service.updateCharacteristic(hap.Characteristic.PM2_5Density, pm2_5);
+    if (typeof value !== 'number' || !isFinite(value)) {
+      this.log.warn(`Invalid ${label} value:`, value);
+      return false;
+    }
+
+    if (value < min) {
+      this.log.debug(`${label} reported as ${value}, below the valid minimum of ${min}; ignoring.`);
+      return false;
+    }
+
+    service.updateCharacteristic(characteristic, value);
+    return true;
+  }
+
+  private updateCharacteristics(data: AirGradientData) {
+    // Use compensated values if enabled and available, otherwise fall back to the raw values
+    const pm2_5 = this.preferred(data.pm02Compensated, data.pm02);
+    const temp = this.preferred(data.atmpCompensated, data.atmp);
+    const humidity = this.preferred(data.rhumCompensated, data.rhum);
+
+    const { pm10, tvocIndex: tvoc, noxIndex: nox, rco2: co2 } = data;
+    const C = hap.Characteristic;
+
+    const pm2_5Applied = this.applyReading(this.service, C.PM2_5Density, 'PM2.5', pm2_5);
+    this.applyReading(this.service, C.PM10Density, 'PM10', pm10);
+    this.applyReading(this.service, C.VOCDensity, 'TVOC', tvoc);
+    this.applyReading(this.service, C.NitrogenDioxideDensity, 'NOx', nox);
+    this.applyReading(this.serviceHumid, C.CurrentRelativeHumidity, 'Humidity', humidity);
+    // HomeKit's valid range for temperature starts at -270C, not 0.
+    this.applyReading(this.serviceTemp, C.CurrentTemperature, 'Temperature', temp, -270);
+    const co2Applied = this.applyReading(this.serviceCO2, C.CarbonDioxideLevel, 'CO2', co2);
+
+    // These two are derived, so only recompute them when their source reading was accepted.
+    // Feeding NaN to calculateAirQuality() would fall through every comparison and report POOR.
+    if (pm2_5Applied) {
+      this.service.updateCharacteristic(C.AirQuality, this.calculateAirQuality(pm2_5));
+    }
+    if (co2Applied) {
+      this.serviceCO2.updateCharacteristic(C.CarbonDioxideDetected, this.calculateCO2Detected(co2));
+    }
+
+    if (this.fetchLogs) {
+      if (this.verboseLogs) {
+        this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
+          `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, Humidity: ${humidity}`);
       } else {
-        this.log.warn('Invalid PM2.5 value:', pm2_5);
-      }
-
-      if (typeof pm10 === 'number' && isFinite(pm10)) {
-        this.service.updateCharacteristic(hap.Characteristic.PM10Density, pm10);
-      } else {
-        this.log.warn('Invalid PM10 value:', pm10);
-      }
-
-      if (typeof tvoc === 'number' && isFinite(tvoc)) {
-        this.service.updateCharacteristic(hap.Characteristic.VOCDensity, tvoc);
-      } else {
-        this.log.warn('Invalid TVOC value:', tvoc);
-      }
-
-      if (typeof nox === 'number' && isFinite(nox)) {
-        this.service.updateCharacteristic(hap.Characteristic.NitrogenDioxideDensity, nox);
-      } else {
-        this.log.warn('Invalid NOx value:', nox);
-      }
-
-      if (typeof temp === 'number' && isFinite(temp)) {
-        this.serviceTemp.updateCharacteristic(hap.Characteristic.CurrentTemperature, temp);
-      } else {
-        this.log.warn('Invalid Temperature value:', temp);
-      }
-
-      if (typeof co2 === 'number' && isFinite(co2)) {
-        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideDetected, this.calculateCO2Detected(co2));
-        this.serviceCO2.updateCharacteristic(hap.Characteristic.CarbonDioxideLevel, co2);
-      } else {
-        this.log.warn('Invalid CO2 value:', co2);
-      }
-
-      if (typeof humidity === 'number' && isFinite(humidity)) {
-        this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, humidity);
-      } else {
-        this.log.warn('Invalid Humidity value:', humidity);
-      }
-
-      this.service.updateCharacteristic(hap.Characteristic.AirQuality, this.calculateAirQuality(pm2_5));
-
-      if (this.fetchLogs) {
-        if (this.verboseLogs) {
-          this.log.info(`Updated characteristics - PM2.5: ${pm2_5}, PM10: ${pm10}, TVOC: ${tvoc}, ` +
-            `NOx: ${nox}, TEMP: ${temp}, CO2: ${co2}, Humidity: ${humidity}`);
-        } else {
-          this.log.info('Updated characteristics.');
-        }
+        this.log.info('Updated characteristics.');
       }
     }
   }

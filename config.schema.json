@@ -14,8 +14,8 @@
       "verboseLogs": {
         "title": "Verbose Logs",
         "type": "boolean",
-        "default": true,
-        "description": "When disabled, log messages omit data payloads and stack traces."
+        "default": false,
+        "description": "When enabled, log messages include full data payloads and stack traces."
       },
       "sensors": {
         "type": "array",
@@ -44,6 +44,13 @@
               "title": "CO2 Alert Threshold",
               "default": 800,
               "description": "The CO\u2082 level (ppm) above which HomeKit shows an alert."
+            },
+            "offlineAfterFailures": {
+              "type": "number",
+              "title": "Failures Before Offline",
+              "default": 3,
+              "minimum": 1,
+              "description": "Consecutive failed polls before the sensor is shown as \"No Response\" in HomeKit. At the default polling interval, 3 is about three minutes of silence."
             }
           }
         }
@@ -85,6 +92,10 @@
             {
               "key": "sensors[].co2AlertThreshold",
               "placeholder": 800
+            },
+            {
+              "key": "sensors[].offlineAfterFailures",
+              "placeholder": 3
             }
           ]
         }
