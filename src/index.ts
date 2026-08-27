@@ -32,7 +32,8 @@ interface AirGradientData {
   ledCo2ThresholdEnd: number;
   serialno: string | number;
   model: string | number;
-  firmwareVersion: string | null;
+  firmwareVersion?: string | null;
+  firmware?: string | null;
   tvocIndex: number;
   noxIndex: number;
 }
@@ -113,6 +114,44 @@ class AirGradientPlatform implements DynamicPlatformPlugin {
   }
 }
 
+// AccessoryInformation characteristics are strings; the AirGradient payload types
+// serialno/model as `string | number`, so coerce and drop blanks.
+function toInfoString(value: unknown): string | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  const text = String(value).trim();
+  return text.length > 0 ? text : undefined;
+}
+
+// HAP ignores a Model or SerialNumber of 1 character or less and keeps the old value.
+function toIdentityString(value: unknown): string | undefined {
+  const text = toInfoString(value);
+  return text && text.length > 1 ? text : undefined;
+}
+
+// The Home app only renders a dotted numeric firmware revision, so pull that out of
+// whatever the device reports (e.g. "3.1.9-rc2" -> "3.1.9").
+function toFirmwareRevision(value: unknown): string | undefined {
+  const text = toInfoString(value);
+  const match = text?.match(/\d+(?:\.\d+){0,2}/);
+  return match ? match[0] : undefined;
+}
+
+// Different AirGradient firmware builds spell this key differently, so try each.
+const FIRMWARE_KEYS = ['firmwareVersion', 'firmware', 'fwVersion', 'fwversion'];
+
+function readFirmwareRevision(data: AirGradientData): string | undefined {
+  const record = data as unknown as Record<string, unknown>;
+  for (const key of FIRMWARE_KEYS) {
+    const revision = toFirmwareRevision(record[key]);
+    if (revision) {
+      return revision;
+    }
+  }
+  return undefined;
+}
+
 function isAirGradientData(x: unknown): x is AirGradientData {
   if (x === null || typeof x !== 'object') {
     return false;
@@ -137,6 +176,7 @@ class AirGradientSensor {
   private readonly pollingInterval: number;
   private readonly apiUrl: string;
   private data: AirGradientData | null = null;
+  private firmwareLookupWarned = false;
   private readonly service: Service;
   private readonly serviceTemp: Service;
   private readonly serviceCO2: Service;
@@ -168,9 +208,9 @@ class AirGradientSensor {
     // Construct the local API URL using the serialno
     this.apiUrl = `http://airgradient_${this.serialno}.local/measures/current`;
 
-    this.accessory.getService(hap.Service.AccessoryInformation)!
-      .setCharacteristic(hap.Characteristic.Manufacturer, 'AirGradient')
-      .setCharacteristic(hap.Characteristic.SerialNumber, this.serialno);
+    // Apply whatever identity we already know. On a restart this comes from the cached
+    // context, so HomeKit shows the real model and firmware before the first poll lands.
+    this.applyAccessoryInformation();
 
     this.service = this.accessory.getService(hap.Service.AirQualitySensor) ||
       this.accessory.addService(hap.Service.AirQualitySensor);
@@ -221,6 +261,71 @@ class AirGradientSensor {
     this.serviceHumid.updateCharacteristic(hap.Characteristic.CurrentRelativeHumidity, 0);
 
     this.updateData();
+  }
+
+  // Writes the accessory's identity onto the AccessoryInformation service from
+  // accessory.context, which Homebridge persists in cachedAccessories.
+  private applyAccessoryInformation() {
+    const info = this.accessory.getService(hap.Service.AccessoryInformation)
+      || this.accessory.addService(hap.Service.AccessoryInformation);
+
+    const context = this.accessory.context;
+    const serial = toIdentityString(context.serial) || toIdentityString(this.serialno);
+    const model = toIdentityString(context.model) || 'AirGradient Sensor';
+    const firmware = toFirmwareRevision(context.firmwareVersion);
+
+    info.setCharacteristic(hap.Characteristic.Manufacturer, 'AirGradient');
+    info.setCharacteristic(hap.Characteristic.Model, model);
+
+    if (serial) {
+      info.setCharacteristic(hap.Characteristic.SerialNumber, serial);
+    } else {
+      this.log.warn(
+        `Serial number "${this.serialno}" is too short for HomeKit (needs more than 1 character); ` +
+        'leaving the SerialNumber characteristic unset.',
+      );
+    }
+
+    if (firmware) {
+      info.setCharacteristic(hap.Characteristic.FirmwareRevision, firmware);
+    }
+  }
+
+  // The device reports its own model and firmware, but only once a poll succeeds.
+  // Cache them on the accessory so the next restart has them immediately.
+  private refreshAccessoryInformation(data: AirGradientData) {
+    const model = toIdentityString(data.model);
+    const firmware = readFirmwareRevision(data);
+    const context = this.accessory.context;
+
+    // Surface the payload keys once so an unrecognised firmware field is diagnosable.
+    if (!firmware && !this.firmwareLookupWarned) {
+      this.firmwareLookupWarned = true;
+      this.log.warn(
+        'No firmware version found in the AirGradient response; HomeKit will show 0.0.0. ' +
+        `Looked for ${FIRMWARE_KEYS.join(', ')}. Keys returned: ${Object.keys(data).join(', ')}`,
+      );
+    }
+
+    let changed = false;
+
+    if (model && model !== context.model) {
+      context.model = model;
+      changed = true;
+    }
+
+    if (firmware && firmware !== context.firmwareVersion) {
+      context.firmwareVersion = firmware;
+      changed = true;
+    }
+
+    if (changed) {
+      this.applyAccessoryInformation();
+      this.log.info(
+        `Accessory information updated - Model: ${context.model}, ` +
+        `Firmware: ${context.firmwareVersion || 'unknown'}, Serial: ${this.serialno}`,
+      );
+    }
   }
 
   private async fetchData() {
@@ -303,6 +408,7 @@ class AirGradientSensor {
     try {
       await this.fetchData();
       if (this.data) {
+        this.refreshAccessoryInformation(this.data);
         this.updateCharacteristics();
       }
     } catch {

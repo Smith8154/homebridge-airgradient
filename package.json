@@ -2,7 +2,7 @@
   "private": false,
   "displayName": "AirGradient",
   "name": "homebridge-airgradient",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Fetches air quality information from AirGradient devices.",
   "license": "Apache-2.0",
   "repository": {
@@ -30,7 +30,7 @@
   ],
   "engines": {
     "homebridge": "^1.6.0 || ^2.0.0-beta.0",
-    "node": "^18.20.4 || ^20.15.1 || ^22"
+    "node": "^22 || ^24 || ^26"
   },
   "peerDependencies": {
     "homebridge": ">=1.6.0"
@@ -39,7 +39,7 @@
     "axios": "^1.7.2"
   },
   "devDependencies": {
-    "@types/node": "^20.12.7",
+    "@types/node": "^22.10.2",
     "@typescript-eslint/eslint-plugin": "^7.7.0",
     "@typescript-eslint/parser": "^7.7.0",
     "eslint": "^8.57.0",
